@@ -1,104 +1,141 @@
 import SwiftUI
 
 struct ChatView: View {
-    @ObservedObject var viewModel: ChatViewModel
+    @StateObject private var viewModel = ChatViewModel()
     @State private var inputText = ""
-    @FocusState private var isInputFocused: Bool
+    @State private var isSpeaking = false
+    @State private var showingPermissionAlert = false
     
     var body: some View {
         VStack(spacing: 0) {
+            PersonalityPickerView(selected: $viewModel.selectedPersonality, setPersonality: viewModel.setPersonality)
+            // Animated head view
+            AnimatedHeadView(isSpeaking: $isSpeaking, personality: viewModel.selectedPersonality)
+                .frame(width: 200, height: 200)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 20)
+                .background(Color.white)
+            // Add CASS title and subtitle
+            VStack(spacing: 2) {
+                Text("C.A.S.S")
+                    .font(.title)
+                    .fontWeight(.bold)
+                    .foregroundColor(.orange)
+                Text("Conversational AI with Swappable Selves")
+                    .font(.subheadline)
+                    .foregroundColor(.gray)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 2)
+            .padding(.bottom, 8)
+            
             // Messages
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    ForEach(viewModel.messages) { message in
-                        MessageView(message: message)
-                            .transition(.move(edge: .bottom))
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack {
+                        ForEach(viewModel.messages) { message in
+                            MessageView(message: message)
+                                .transition(.move(edge: .bottom))
+                                .id(message.id)
+                        }
                     }
                 }
+                .animation(.easeInOut, value: viewModel.messages)
+                .frame(maxWidth: .infinity)
                 .padding()
+                .onChange(of: viewModel.messages) { _, newValue in
+                    if let last = newValue.last {
+                        withAnimation {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
+                }
             }
             
             // Input area
-            VStack(spacing: 8) {
+            VStack(spacing: 20) {
                 // Microphone button
                 Button(action: {
-                    if viewModel.isContinuousListening {
-                        viewModel.stopContinuousListening()
+                    if viewModel.microphonePermissionGranted {
+                        viewModel.toggleRecording()
                     } else {
-                        viewModel.startContinuousListening()
+                        showingPermissionAlert = true
                     }
                 }) {
-                    VStack {
-                        Image(systemName: viewModel.isContinuousListening ? "stop.circle.fill" : "mic.circle.fill")
-                            .font(.system(size: 44))
-                            .foregroundColor(viewModel.isContinuousListening ? .red : .orange)
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 25)
+                            .fill(viewModel.isRecording ? Color.red : Color.orange)
+                            .frame(width: 120, height: 120)
+                            .shadow(radius: 3)
                         
-                        Text(viewModel.isContinuousListening ? "Stop Listening" : "Start Conversation")
-                            .font(.caption)
-                            .foregroundColor(viewModel.isContinuousListening ? .red : .orange)
+                        Image(systemName: viewModel.isRecording ? "stop.fill" : "mic.fill")
+                            .foregroundColor(.white)
+                            .font(.system(size: 50))
                     }
                 }
-                .disabled(!viewModel.microphonePermissionGranted)
-                .padding(.vertical, 8)
                 
-                // Status indicator
-                if viewModel.isContinuousListening {
+                // Text input field
+                if !viewModel.isContinuousListening {
                     HStack {
-                        Circle()
-                            .fill(viewModel.isRecording ? .green : .orange)
-                            .frame(width: 8, height: 8)
+                        TextField("Type a message...", text: $inputText)
+                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                            .disabled(viewModel.isProcessing)
                         
-                        Text(statusText)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        Button(action: sendMessage) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .foregroundColor(.orange)
+                                .font(.title)
+                        }
+                        .disabled(inputText.isEmpty || viewModel.isProcessing)
                     }
-                    .padding(.bottom, 4)
+                    .padding(.horizontal)
                 }
-                
-                // Text input
-                HStack(spacing: 12) {
-                    TextField("Type a message...", text: $inputText)
-                        .textFieldStyle(RoundedBorderTextFieldStyle())
-                        .focused($isInputFocused)
-                        .disabled(viewModel.isRecording)
-                    
-                    Button(action: sendMessage) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 24))
-                            .foregroundColor(.orange)
-                    }
-                    .disabled(inputText.isEmpty || viewModel.isRecording)
-                }
-                .padding(.horizontal)
-                .padding(.bottom, 8)
             }
-            .background(Color(.systemBackground))
-            .shadow(radius: 2)
+            .padding(.vertical, 20)
+            .background(Color.white)
         }
-        .onAppear {
-            viewModel.checkMicrophonePermission()
+        .onChange(of: viewModel.messages) { oldValue, newValue in
+            if !newValue.isEmpty && newValue.count > oldValue.count {
+                isSpeaking = true
+            } else {
+                isSpeaking = false
+            }
         }
-    }
-    
-    private var statusText: String {
-        if viewModel.isSpeaking {
-            return "CASS is speaking..."
-        } else if viewModel.isProcessing {
-            return "Processing..."
-        } else if viewModel.isRecording {
-            return "Listening..."
-        } else {
-            return "Ready..."
+        .alert("Microphone Access", isPresented: $showingPermissionAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Allow") {
+                viewModel.requestMicrophonePermission()
+            }
+        } message: {
+            Text("CASS needs access to your microphone for voice conversations. Would you like to allow microphone access?")
         }
+        .overlay(
+            // Recording indicator
+            Group {
+                if viewModel.isContinuousListening {
+                    VStack {
+                        Text("Listening...")
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(Color.orange.opacity(0.8))
+                            .cornerRadius(20)
+                    }
+                    .padding(.bottom, 100)
+                    .animation(.easeInOut, value: viewModel.isContinuousListening)
+                }
+            }
+            , alignment: .bottom
+        )
+        .onAppear { viewModel.startAudioSession() }
+        .onDisappear { viewModel.stopAudioSession() }
     }
     
     private func sendMessage() {
         guard !inputText.isEmpty else { return }
-        let text = inputText
-        inputText = ""
-        
         Task {
-            await viewModel.sendMessage(text)
+            await viewModel.sendMessage(inputText)
+            inputText = ""
         }
     }
 }
@@ -112,11 +149,13 @@ struct MessageView: View {
                 Spacer()
             }
             
-            Text(message.content)
-                .padding()
-                .background(message.isUser ? Color.orange : Color(.systemGray6))
-                .foregroundColor(message.isUser ? .white : .primary)
-                .cornerRadius(16)
+            VStack(alignment: message.isUser ? .trailing : .leading) {
+                Text(message.content)
+                    .padding()
+                    .background(message.isUser ? Color.orange : Color.gray.opacity(0.2))
+                    .foregroundColor(message.isUser ? .white : .primary)
+                    .cornerRadius(16)
+            }
             
             if !message.isUser {
                 Spacer()
@@ -125,7 +164,30 @@ struct MessageView: View {
     }
 }
 
+struct PersonalityPickerView: View {
+    @Binding var selected: ChatViewModel.Personality
+    var setPersonality: (ChatViewModel.Personality) -> Void
+    var body: some View {
+        HStack(spacing: 16) {
+            ForEach(ChatViewModel.Personality.allCases) { personality in
+                Button(action: {
+                    setPersonality(personality)
+                }) {
+                    Text(personality.rawValue)
+                        .fontWeight(selected == personality ? .bold : .regular)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 12)
+                        .background(selected == personality ? Color.orange.opacity(0.2) : Color.clear)
+                        .cornerRadius(10)
+                        .foregroundColor(selected == personality ? .orange : .primary)
+                }
+            }
+        }
+        .padding(.top, 12)
+        .padding(.bottom, 4)
+    }
+}
+
 #Preview {
-    let viewModel = ChatViewModel()
-    return ChatView(viewModel: viewModel)
+    ChatView()
 } 
